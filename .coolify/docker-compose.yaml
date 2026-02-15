@@ -57,8 +57,9 @@ services:
     depends_on:
       - backend
       - websocket
-    ports:
-      - "8080:8080"
+    labels:
+      - "coolify.managed=true"
+      - "coolify.port=8080"
 
   websocket:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
