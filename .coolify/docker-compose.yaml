@@ -60,6 +60,9 @@ services:
     labels:
       - "coolify.managed=true"
       - "coolify.port=8080"
+    networks:
+      - default
+      - coolify
 
   websocket:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -145,3 +148,10 @@ volumes:
   sites:
   db-data:
   redis-queue-data:
+
+
+networks:
+  default:
+    name: lo4ww4gwws8k8gwowgw40sgo
+  coolify:
+    external: true
