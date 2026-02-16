@@ -10,15 +10,18 @@ services:
       - -c
     command:
       - >
-        ls -1 apps > sites/apps.txt; bench set-config -g db_host $$DB_HOST; bench set-config -gp db_port $$DB_PORT; bench set-config -g redis_cache "$$REDIS_CACHE"; bench set-config -g redis_queue "$$REDIS_QUEUE"; bench set-config -g redis_socketio "$$REDIS_QUEUE"; bench set-config -gp socketio_port $$SOCKETIO_PORT;
+        bench set-config -g db_host $$DB_HOST; bench set-config -gp db_port $$DB_PORT; bench set-config -g redis_cache "$$REDIS_CACHE"; bench set-config -g redis_queue "$$REDIS_QUEUE"; bench set-config -g redis_socketio "$$REDIS_QUEUE"; bench set-config -gp socketio_port $$SOCKETIO_PORT;
     environment:
-      DB_HOST: ${DB_HOST:-db}
+      DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-3306}
       REDIS_CACHE: ${REDIS_CACHE}
       REDIS_QUEUE: ${REDIS_QUEUE}
       SOCKETIO_PORT: "9000"
     volumes:
       - sites:/home/frappe/frappe-bench/sites
+    networks:
+      - default
+      - coolify
 
   backend:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -29,6 +32,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
   frontend:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -62,6 +68,9 @@ services:
       - "traefik.http.routers.erpnext.tls=true"
       - "traefik.http.routers.erpnext.tls.certresolver=letsencrypt"
       - "traefik.http.services.erpnext.loadbalancer.server.port=8080"
+    networks:
+      - default
+      - coolify
 
   websocket:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -75,6 +84,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
   queue-short:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -86,6 +98,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
   queue-long:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -97,6 +112,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
   scheduler:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -108,12 +126,14 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
 volumes:
   sites:
 
 
 networks:
-  default:
+  coolify:
     external: true
-    name: coolify
