@@ -12,20 +12,21 @@ services:
       - >
         ls -1 apps > sites/apps.txt; bench set-config -g db_host $$DB_HOST; bench set-config -gp db_port $$DB_PORT; bench set-config -g redis_cache "redis://$$REDIS_CACHE"; bench set-config -g redis_queue "redis://$$REDIS_QUEUE"; bench set-config -g redis_socketio "redis://$$REDIS_QUEUE"; bench set-config -gp socketio_port $$SOCKETIO_PORT;
     environment:
-      DB_HOST: db
-      DB_PORT: "3306"
-      REDIS_CACHE: redis-cache:6379
-      REDIS_QUEUE: redis-queue:6379
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
+      REDIS_CACHE: ${REDIS_CACHE:-redis-cache:6379}
+      REDIS_QUEUE: ${REDIS_QUEUE:-redis-queue:6379}
       SOCKETIO_PORT: "9000"
     volumes:
       - sites:/home/frappe/frappe-bench/sites
     depends_on:
-      db:
-        condition: service_healthy
       redis-cache:
         condition: service_started
       redis-queue:
         condition: service_started
+    networks:
+      - default
+      - coolify
 
   backend:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -36,6 +37,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
   frontend:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -119,28 +123,6 @@ services:
       configurator:
         condition: service_completed_successfully
 
-  db:
-    image: mariadb:11.8
-    restart: unless-stopped
-    pull_policy: always
-    healthcheck:
-      test: [ "CMD", "healthcheck.sh", "--connect", "--innodb_initialized" ]
-      start_period: 5s
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      - --skip-character-set-client-handshake
-      - --skip-innodb-read-only-compressed
-      - --max-connections=500
-    environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-      MARIADB_AUTO_UPGRADE: 1
-    volumes:
-      - db-data:/var/lib/mysql
-
   redis-cache:
     image: redis:6.2-alpine
     restart: unless-stopped
@@ -155,7 +137,6 @@ services:
 
 volumes:
   sites:
-  db-data:
   redis-queue-data:
 
 
