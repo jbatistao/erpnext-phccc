@@ -10,13 +10,30 @@ services:
       - -c
     command:
       - >
-        bench set-config -g db_host $$DB_HOST; bench set-config -gp db_port $$DB_PORT; bench set-config -g redis_cache "$$REDIS_CACHE"; bench set-config -g redis_queue "$$REDIS_QUEUE"; bench set-config -g redis_socketio "$$REDIS_QUEUE"; bench set-config -gp socketio_port $$SOCKETIO_PORT;
+        python3 -c " import json, os, sys; try:
+            conf_path = 'sites/common_site_config.json'
+            os.makedirs('sites', exist_ok=True)
+            conf = json.load(open(conf_path)) if os.path.exists(conf_path) else {}
+            conf.update({
+                'db_host': os.environ.get('DB_HOST'),
+                'db_port': int(os.environ.get('DB_PORT') or 3306),
+                'redis_cache': os.environ.get('REDIS_CACHE'),
+                'redis_queue': os.environ.get('REDIS_QUEUE'),
+                'redis_socketio': os.environ.get('REDIS_QUEUE'),
+                'socketio_port': 9000
+            })
+            with open(conf_path, 'w') as f:
+                json.dump(conf, f, indent=4)
+            print('SUCCESS: common_site_config.json updated.')
+        except Exception as e:
+            print(f'ERROR: {str(e)}', file=sys.stderr)
+            sys.exit(1)
+        "
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-3306}
       REDIS_CACHE: ${REDIS_CACHE}
       REDIS_QUEUE: ${REDIS_QUEUE}
-      SOCKETIO_PORT: "9000"
     volumes:
       - sites:/home/frappe/frappe-bench/sites
     networks:
