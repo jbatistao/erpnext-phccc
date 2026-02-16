@@ -157,9 +157,6 @@ volumes:
   db-data:
   redis-queue-data:
 
-
-networks:
-  default:
-    name: ${COOLIFY_RESOURCE_UUID:-lo4ww4gwws8k8gwowgw40sgo}
-  coolify:
-    external: true
+    # networks:
+    #   coolify:
+    #     external: true
