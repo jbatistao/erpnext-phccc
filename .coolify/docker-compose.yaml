@@ -19,9 +19,6 @@ services:
       SOCKETIO_PORT: "9000"
     volumes:
       - sites:/home/frappe/frappe-bench/sites
-    networks:
-      - default
-      - coolify
 
   backend:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -32,9 +29,6 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
-    networks:
-      - default
-      - coolify
 
   frontend:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -68,9 +62,6 @@ services:
       - "traefik.http.routers.erpnext.tls=true"
       - "traefik.http.routers.erpnext.tls.certresolver=letsencrypt"
       - "traefik.http.services.erpnext.loadbalancer.server.port=8080"
-    networks:
-      - default
-      - coolify
 
   websocket:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -84,9 +75,6 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
-    networks:
-      - default
-      - coolify
 
   queue-short:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -98,9 +86,6 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
-    networks:
-      - default
-      - coolify
 
   queue-long:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -112,9 +97,6 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
-    networks:
-      - default
-      - coolify
 
   scheduler:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -126,14 +108,12 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
-    networks:
-      - default
-      - coolify
 
 volumes:
   sites:
 
 
 networks:
-  coolify:
+  default:
     external: true
+    name: coolify
