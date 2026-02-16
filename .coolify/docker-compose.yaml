@@ -160,7 +160,6 @@ volumes:
 
 networks:
   default:
-    name: lo4ww4gwws8k8gwowgw40sgo
-    external: true
+    name: ${COOLIFY_RESOURCE_UUID:-lo4ww4gwws8k8gwowgw40sgo}
   coolify:
     external: true
