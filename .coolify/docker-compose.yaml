@@ -19,11 +19,6 @@ services:
       SOCKETIO_PORT: "9000"
     volumes:
       - sites:/home/frappe/frappe-bench/sites
-    depends_on:
-      redis-cache:
-        condition: service_started
-      redis-queue:
-        condition: service_started
     networks:
       - default
       - coolify
@@ -123,21 +118,8 @@ services:
       configurator:
         condition: service_completed_successfully
 
-  redis-cache:
-    image: redis:6.2-alpine
-    restart: unless-stopped
-    pull_policy: always
-
-  redis-queue:
-    image: redis:6.2-alpine
-    restart: unless-stopped
-    pull_policy: always
-    volumes:
-      - redis-queue-data:/data
-
 volumes:
   sites:
-  redis-queue-data:
 
 
 networks:
