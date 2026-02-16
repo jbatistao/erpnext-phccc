@@ -63,6 +63,7 @@ services:
       - "coolify.managed=true"
       - "coolify.port=8080"
       - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
       - "traefik.http.routers.erpnext.rule=Host(`ph.puntospanama.net`)"
       - "traefik.http.routers.erpnext.entrypoints=websecure"
       - "traefik.http.routers.erpnext.tls=true"
