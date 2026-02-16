@@ -84,6 +84,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
   queue-short:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -95,6 +98,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
   queue-long:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -106,6 +112,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
   scheduler:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
@@ -117,6 +126,9 @@ services:
     depends_on:
       configurator:
         condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
 
 volumes:
   sites:
