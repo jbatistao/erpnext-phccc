@@ -157,6 +157,7 @@ volumes:
   db-data:
   redis-queue-data:
 
-    # networks:
-    #   coolify:
-    #     external: true
+
+networks:
+  coolify:
+    external: true
