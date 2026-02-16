@@ -9,11 +9,18 @@ services:
       - bash
       - -c
     command:
-      - >
-        python3 -c " import json, os, sys; try:
+      - |
+        python3 - << 'EOF'
+        import json, os, sys
+        try:
             conf_path = 'sites/common_site_config.json'
             os.makedirs('sites', exist_ok=True)
-            conf = json.load(open(conf_path)) if os.path.exists(conf_path) else {}
+            if os.path.exists(conf_path):
+                with open(conf_path, 'r') as f:
+                    conf = json.load(f)
+            else:
+                conf = {}
+            
             conf.update({
                 'db_host': os.environ.get('DB_HOST'),
                 'db_port': int(os.environ.get('DB_PORT') or 3306),
@@ -22,13 +29,14 @@ services:
                 'redis_socketio': os.environ.get('REDIS_QUEUE'),
                 'socketio_port': 9000
             })
+            
             with open(conf_path, 'w') as f:
                 json.dump(conf, f, indent=4)
             print('SUCCESS: common_site_config.json updated.')
         except Exception as e:
             print(f'ERROR: {str(e)}', file=sys.stderr)
             sys.exit(1)
-        "
+        EOF
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-3306}
