@@ -11,8 +11,9 @@ services:
     command:
       - |
         python3 - << 'EOF'
-        import json, os, sys
+        import json, os, sys, glob
         try:
+            # 1. Actualizar common_site_config.json
             conf_path = 'sites/common_site_config.json'
             os.makedirs('sites', exist_ok=True)
             if os.path.exists(conf_path):
@@ -24,43 +25,200 @@ services:
             conf.update({
                 'db_host': os.environ.get('DB_HOST'),
                 'db_port': int(os.environ.get('DB_PORT') or 3306),
-                'redis_cache': 'redis://redis-cache:6379',
-                'redis_queue': 'redis://redis-queue:6379',
-                'redis_socketio': 'redis://redis-socketio:6379',
+                'redis_cache': os.environ.get('REDIS_CACHE'),
+                'redis_queue': os.environ.get('REDIS_QUEUE'),
+                'redis_socketio': os.environ.get('REDIS_SOCKETIO'),
                 'socketio_port': 9000
             })
             
             with open(conf_path, 'w') as f:
                 json.dump(conf, f, indent=4)
-            print('SUCCESS: common_site_config.json updated.')
+            print('✓ common_site_config.json actualizado.')
+            
+            # 2. Actualizar credenciales en site_config.json de TODOS los sitios existentes
+            site_dirs = glob.glob('sites/*/')
+            site_dirs = [d for d in site_dirs if os.path.basename(d.rstrip('/')) not in ['assets', 'assets']]
+            
+            print(f'Buscando sitios existentes... Encontrados: {len(site_dirs)}')
+            
+            for site_dir in site_dirs:
+                site_config_path = os.path.join(site_dir, 'site_config.json')
+                if os.path.exists(site_config_path):
+                    site_name = os.path.basename(site_dir.rstrip('/'))
+                    print(f'Actualizando credenciales para: {site_name}')
+                    
+                    with open(site_config_path, 'r') as f:
+                        site_conf = json.load(f)
+                    
+                    # Actualizar TODAS las credenciales de DB
+                    site_conf['db_host'] = os.environ.get('DB_HOST')
+                    site_conf['db_port'] = int(os.environ.get('DB_PORT') or 3306)
+                    # Usar root como usuario por defecto y DB_ROOT_PASSWORD
+                    site_conf['db_user'] = 'root'
+                    site_conf['db_password'] = os.environ.get('DB_ROOT_PASSWORD')
+                    # db_name se mantiene como está (cada sitio tiene su propia BD)
+                    
+                    with open(site_config_path, 'w') as f:
+                        json.dump(site_conf, f, indent=4)
+                    
+                    print(f'✓ Credenciales actualizadas para: {site_name}')
+                    print(f'  - DB User: root')
+                    print(f'  - DB Host: {os.environ.get("DB_HOST")}')
+            
+            print('SUCCESS: Configuración completada.')
         except Exception as e:
             print(f'ERROR: {str(e)}', file=sys.stderr)
+            import traceback
+            traceback.print_exc()
             sys.exit(1)
         EOF
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-3306}
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      REDIS_CACHE: ${REDIS_CACHE}
+      REDIS_QUEUE: ${REDIS_QUEUE}
+      REDIS_SOCKETIO: ${REDIS_SOCKETIO}
     volumes:
       - sites:/home/frappe/frappe-bench/sites
+    networks:
+      - default
+      - coolify
+
+  app-installer:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
+    restart: "no"
+    pull_policy: always
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - |
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📦 Instalador de Apps de Frappe"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        SITE_NAME="$${FRAPPE_SITE_NAME_HEADER}"
+        APPS_TO_INSTALL="$${INSTALL_APPS:-hrms}"
+
+        if [ -z "$$SITE_NAME" ]; then
+          echo "❌ ERROR: FRAPPE_SITE_NAME_HEADER no está configurado"
+          exit 1
+        fi
+
+        echo "Sitio: $$SITE_NAME"
+        echo "Apps a instalar: $$APPS_TO_INSTALL"
+        echo ""
+
+        # Verificar que el sitio existe
+        if [ ! -d "sites/$$SITE_NAME" ]; then
+          echo "⚠️  El sitio $$SITE_NAME no existe todavía. Saltando instalación de apps."
+          exit 0
+        fi
+
+        # Verificar que el sitio esté configurado correctamente
+        if [ ! -f "sites/$$SITE_NAME/site_config.json" ]; then
+          echo "⚠️  El sitio $$SITE_NAME no tiene site_config.json. El sitio no está completamente configurado."
+          echo "⚠️  Saltando instalación de apps."
+        exit 0
+        fi
+
+        # Verificar apps.txt (crear si no existe)
+        APPS_TXT="sites/$$SITE_NAME/apps.txt"
+        if [ ! -f "$$APPS_TXT" ]; then
+          echo "⚠️  $$APPS_TXT no encontrado. Creando archivo vacío..."
+          touch "$$APPS_TXT"
+        fi
+
+        echo "Apps actualmente instalados:"
+        cat "$$APPS_TXT"
+        echo ""
+
+        # Procesar cada app
+        IFS=',' read -ra APPS <<< "$$APPS_TO_INSTALL"
+        for APP in "$${APPS[@]}"; do
+          APP=$$(echo "$$APP" | xargs)  # Trim whitespace
+          
+          if grep -q "^$$APP$$" "$$APPS_TXT"; then
+            echo "✓ $$APP ya está instalado. Saltando."
+          else
+            echo "📥 Instalando $$APP..."
+            
+            # Verificar si el app ya está descargado
+            if [ ! -d "apps/$$APP" ]; then
+              echo "  Descargando $$APP desde GitHub..."
+              cd /home/frappe/frappe-bench
+              bench get-app $$APP || {
+                echo "❌ Error descargando $$APP"
+                continue
+              }
+            else
+              echo "  $$APP ya está descargado"
+            fi
+            
+            # Siempre instalar/actualizar dependencias de Python
+            echo "  Instalando dependencias de Python para $$APP..."
+            cd /home/frappe/frappe-bench
+            bench setup requirements $$APP || {
+              echo "❌ Error instalando dependencias de $$APP"
+              continue
+            }
+            
+            # Instalar en el sitio
+            echo "  Instalando $$APP en $$SITE_NAME..."
+            bench --site "$$SITE_NAME" install-app $$APP || {
+              echo "❌ Error instalando $$APP en el sitio"
+              continue
+            }
+            
+            echo "✅ $$APP instalado exitosamente"
+          fi
+        done
+
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "✅ Proceso de instalación completado"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    environment:
+      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER}
+      INSTALL_APPS: ${INSTALL_APPS:-hrms}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - apps:/home/frappe/frappe-bench/apps
     depends_on:
-      redis-cache:
-        condition: service_started
-      redis-queue:
-        condition: service_started
-      redis-socketio:
-        condition: service_started
+      configurator:
+        condition: service_completed_successfully
     networks:
       - default
       - coolify
 
   backend:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
-    restart: unless-stopped
+    restart: always
     pull_policy: always
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - >
+        echo "Esperando a que la base de datos esté disponible en ${DB_HOST}:${DB_PORT}..." && for i in {1..60}; do
+          if timeout 2 bash -c "</dev/tcp/${DB_HOST}/${DB_PORT}" 2>/dev/null; then
+            echo "✓ Base de datos disponible en puerto ${DB_PORT}" &&
+            break;
+          fi;
+          echo "Intento $$i/60 - Esperando..." &&
+          sleep 2;
+        done && echo "Creando directorios necesarios..." && mkdir -p /home/frappe/logs && cd /home/frappe/frappe-bench/sites && echo "Iniciando backend con Gunicorn..." && exec /home/frappe/frappe-bench/env/bin/gunicorn -b 0.0.0.0:8000 --worker-tmp-dir /dev/shm --threads=4 --workers=2 --timeout=120 frappe.app:application
     volumes:
       - sites:/home/frappe/frappe-bench/sites
+      - apps:/home/frappe/frappe-bench/apps
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
     depends_on:
       configurator:
+        condition: service_completed_successfully
+      app-installer:
         condition: service_completed_successfully
     networks:
       - default
@@ -111,6 +269,7 @@ services:
       - /home/frappe/frappe-bench/apps/frappe/socketio.js
     volumes:
       - sites:/home/frappe/frappe-bench/sites
+      - apps:/home/frappe/frappe-bench/apps
     depends_on:
       configurator:
         condition: service_completed_successfully
@@ -122,11 +281,48 @@ services:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
     restart: unless-stopped
     pull_policy: always
-    command: bench worker --queue short,default
+    command:
+      - bash
+      - -c
+      - |
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🔧 Queue Short Worker Initialization"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        cd /home/frappe/frappe-bench
+
+        # Wait for site to be available
+        echo "Waiting for site directory..."
+        for i in {1..30}; do
+          if [ -f "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt" ]; then
+            echo "✓ Site found: ${FRAPPE_SITE_NAME_HEADER}"
+            break
+          fi
+          echo "Attempt $i/30 - Waiting for site..."
+          sleep 2
+        done
+
+        # Remove HRMS from apps.txt if present
+        echo ""
+        echo "Checking apps.txt..."
+        if [ -f "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt" ]; then
+          if grep -q "^hrms$" "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt"; then
+            echo "Removing HRMS from apps.txt..."
+            sed -i '/^hrms$/d' "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt"
+            echo "✓ HRMS removed"
+          fi
+        fi
+
+        echo ""
+        echo "Starting queue worker..."
+        exec bench worker --queue short,default
     volumes:
       - sites:/home/frappe/frappe-bench/sites
+      - apps:/home/frappe/frappe-bench/apps
     depends_on:
       configurator:
+        condition: service_completed_successfully
+      app-installer:
         condition: service_completed_successfully
     networks:
       - default
@@ -136,11 +332,48 @@ services:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
     restart: unless-stopped
     pull_policy: always
-    command: bench worker --queue long,default,short
+    command:
+      - bash
+      - -c
+      - |
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🔧 Queue Long Worker Initialization"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        cd /home/frappe/frappe-bench
+
+        # Wait for site to be available
+        echo "Waiting for site directory..."
+        for i in {1..30}; do
+          if [ -f "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt" ]; then
+            echo "✓ Site found: ${FRAPPE_SITE_NAME_HEADER}"
+            break
+          fi
+          echo "Attempt $i/30 - Waiting for site..."
+          sleep 2
+        done
+
+        # Remove HRMS from apps.txt if present
+        echo ""
+        echo "Checking apps.txt..."
+        if [ -f "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt" ]; then
+          if grep -q "^hrms$" "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt"; then
+            echo "Removing HRMS from apps.txt..."
+            sed -i '/^hrms$/d' "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt"
+            echo "✓ HRMS removed"
+          fi
+        fi
+
+        echo ""
+        echo "Starting queue worker..."
+        exec bench worker --queue long,default,short
     volumes:
       - sites:/home/frappe/frappe-bench/sites
+      - apps:/home/frappe/frappe-bench/apps
     depends_on:
       configurator:
+        condition: service_completed_successfully
+      app-installer:
         condition: service_completed_successfully
     networks:
       - default
@@ -150,42 +383,76 @@ services:
     image: frappe/erpnext:${ERPNEXT_VERSION:-v16.5.0}
     restart: unless-stopped
     pull_policy: always
-    command: bench schedule
+    command:
+      - bash
+      - -c
+      - |
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🔧 Scheduler Initialization"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        cd /home/frappe/frappe-bench
+
+        # Wait for site to be available
+        echo "Waiting for site directory..."
+        for i in {1..30}; do
+          if [ -f "sites/${FRAPPE_SITE_NAME_HEADER}/site_config.json" ]; then
+            echo "✓ Site found: ${FRAPPE_SITE_NAME_HEADER}"
+            break
+          fi
+          echo "Attempt $i/30 - Waiting for site..."
+          sleep 2
+        done
+
+        # Check and show current apps
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Checking installed apps..."
+
+        if [ -f "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt" ]; then
+          echo "Content of apps.txt:"
+          cat "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt"
+          echo ""
+          echo "Number of lines: $(wc -l < sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt)"
+        else
+          echo "⚠️ apps.txt not found!"
+        fi
+
+        # Try to uninstall HRMS using bench if it's in apps.txt
+        if grep -q "^hrms$" "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt" 2>/dev/null; then
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "HRMS found in apps.txt, attempting to uninstall..."
+          
+          # Try to remove it from apps.txt directly
+          sed -i '/^hrms$/d' "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt"
+          echo "✓ Removed HRMS from apps.txt"
+          
+          echo "Updated apps.txt:"
+          cat "sites/${FRAPPE_SITE_NAME_HEADER}/apps.txt"
+        else
+          echo "✓ HRMS not in apps.txt"
+        fi
+
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Starting scheduler..."
+        exec bench schedule
     volumes:
       - sites:/home/frappe/frappe-bench/sites
+      - apps:/home/frappe/frappe-bench/apps
     depends_on:
       configurator:
+        condition: service_completed_successfully
+      app-installer:
         condition: service_completed_successfully
     networks:
       - default
       - coolify
 
-  redis-cache:
-    image: redis:7.2-alpine
-    restart: unless-stopped
-    pull_policy: always
-    networks:
-      - default
-
-  redis-queue:
-    image: redis:7.2-alpine
-    restart: unless-stopped
-    pull_policy: always
-    volumes:
-      - redis-queue-data:/data
-    networks:
-      - default
-
-  redis-socketio:
-    image: redis:7.2-alpine
-    restart: unless-stopped
-    pull_policy: always
-    networks:
-      - default
-
 volumes:
   sites:
-  redis-queue-data:
+  apps:
 
 
 networks:

@@ -1,0 +1,101 @@
+# https://ph.puntospanama.net:8080
+
+# DB_HOST=tkggcgscww8c80w488okskwc
+# DB_PORT=3306
+# DB_ROOT_PASSWORD=OlDPfoFyicZHGp6gYJt1EvusfiW6NTMZqVEVsJ2oaQZq9GpP31lNo2fDQBVwcVls
+# REDIS_CACHE_URL=redis://default:XhudwfyCai7C8J14tLGrHbGYp73JaBdFod49jMi63ifBN5onyeNhVJjfVL4aWNyt@ycwg48k4wo40ogo8s4kgc0so:6379/0
+# REDIS_QUEUE_URL=redis://default:XhudwfyCai7C8J14tLGrHbGYp73JaBdFod49jMi63ifBN5onyeNhVJjfVL4aWNyt@ycwg48k4wo40ogo8s4kgc0so:6379/0
+# REDIS_SOCKETIO_URL=redis://default:XhudwfyCai7C8J14tLGrHbGYp73JaBdFod49jMi63ifBN5onyeNhVJjfVL4aWNyt@ycwg48k4wo40ogo8s4kgc0so:6379/0
+# SITE_NAME=ph.puntospanama.net
+# FRAPPE_SITE_NAME_HEADER=ph.puntospanama.net
+# BACKEND_HOST=backend:8000
+
+version: '3.7'
+services:
+  backend:
+    image: 'frappe/erpnext:v16.5.0'
+    deploy:
+      restart_policy:
+        condition: on-failure
+    environment:
+      - 'DB_HOST=${DB_HOST}'
+      - 'DB_PORT=${DB_PORT:-3306}'
+      - 'MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}'
+      - 'REDIS_CACHE=${REDIS_CACHE_URL}'
+      - 'REDIS_QUEUE=${REDIS_QUEUE_URL}'
+      - 'REDIS_SOCKETIO=${REDIS_SOCKETIO_URL}'
+      - FRAPPE_SITE_NAME_HEADER=ph.puntospanama.net
+      - UPSTREAM_REAL_IP_ADDRESS=0.0.0.0
+    networks:
+      - coolify
+    volumes:
+      - 'erpnext-sites:/home/frappe/frappe-bench/sites'
+      - 'erpnext-assets:/home/frappe/frappe-bench/sites/assets'
+  configurator:
+    image: 'frappe/erpnext:v16.5.0'
+    deploy:
+      restart_policy:
+        condition: none
+    entrypoint:
+      - sh
+      - '-c'
+    command:
+      - "bench set-config -g db_host $$DB_HOST
+
+        bench set-config -g redis_cache $$REDIS_CACHE
+
+        bench set-config -g redis_queue $$REDIS_QUEUE
+
+        bench set-config -g redis_socketio $$REDIS_SOCKETIO\n"
+    environment:
+      - 'DB_HOST=${DB_HOST}'
+      - 'REDIS_CACHE=${REDIS_CACHE_URL}'
+      - 'REDIS_QUEUE=${REDIS_QUEUE_URL}'
+      - 'REDIS_SOCKETIO=${REDIS_SOCKETIO_URL}'
+    networks:
+      - coolify
+    volumes:
+      - 'erpnext-sites:/home/frappe/frappe-bench/sites'
+  frontend:
+    image: 'frappe/erpnext:v16.5.0'
+    command: nginx-entrypoint.sh
+    environment:
+      - BACKEND_HOST=backend
+      - BACKEND_PORT=8000
+      - SOCKETIO_HOST=websocket
+      - SOCKETIO_PORT=9000
+      - FRAPPE_SITE_NAME_HEADER=ph.puntospanama.net
+      - UPSTREAM_REAL_IP_ADDRESS=0.0.0.0
+    networks:
+      - coolify
+    volumes:
+      - 'erpnext-sites:/home/frappe/frappe-bench/sites'
+      - 'erpnext-assets:/home/frappe/frappe-bench/sites/assets'
+  websocket:
+    image: 'frappe/erpnext:v16.5.0'
+    command: 'node /home/frappe/frappe-bench/apps/frappe/socketio.js'
+    environment:
+      - 'DB_HOST=${DB_HOST}'
+      - 'REDIS_SOCKETIO=${REDIS_SOCKETIO_URL}'
+    networks:
+      - coolify
+    volumes:
+      - 'erpnext-sites:/home/frappe/frappe-bench/sites'
+  worker-default:
+    image: 'frappe/erpnext:v16.5.0'
+    command: 'bench worker --queue default'
+    environment:
+      - 'DB_HOST=${DB_HOST}'
+      - 'REDIS_QUEUE=${REDIS_QUEUE_URL}'
+    networks:
+      - coolify
+    volumes:
+      - 'erpnext-sites:/home/frappe/frappe-bench/sites'
+volumes:
+  erpnext-sites:
+    driver: local
+  erpnext-assets:
+    driver: local
+networks:
+  coolify:
+    external: true

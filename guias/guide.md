@@ -3,15 +3,17 @@ bash
 docker ps | grep backend
 
 ## Entra al contenedor
-docker exec -it [BACKEND_CONTAINER_NAME] bash
+docker exec -it backend-kkwcogw44wo0ckwkso4o0co0 bash
 
 ## Ver el password de la BD
 echo $DB_PASSWORD
 
+
+ls sites/
 ## El BD Name es el nombre del servicio para la BD
 
 ## Crea el sitio
-bench new-site ph.puntospanama.net --admin-password [ADMIN_PASSWORD] --db-root-password [DB_PASSWORD]
+bench new-site ph.puntospanama.net --admin-password [USER_PASSWORD] --db-root-password [DB_PASSWORD]
 
 ## Instala ERP Next
 bench --site ph.puntospanama.net install-app erpnext

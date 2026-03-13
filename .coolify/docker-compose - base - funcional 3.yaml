@@ -1,0 +1,334 @@
+version: '3.8'
+services:
+  configurator:
+    image: 'jbatistao/frappe-2-full:v15'
+    restart: 'no'
+    pull_policy: always
+    entrypoint:
+      - bash
+      - '-c'
+    command:
+      - "python3 - << 'EOF'
+
+        import json, os, sys, glob
+
+        try:
+
+        \    # 1. Actualizar common_site_config.json
+
+        \    conf_path = 'sites/common_site_config.json'
+
+        \    os.makedirs('sites', exist_ok=True)
+
+        \    if os.path.exists(conf_path):
+
+        \        with open(conf_path, 'r') as f:
+
+        \            conf = json.load(f)
+
+        \    else:
+
+        \        conf = {}
+
+        \   \ 
+
+        \    conf.update({
+
+        \        'db_host': os.environ.get('DB_HOST'),
+
+        \        'db_port': int(os.environ.get('DB_PORT') or 3306),
+
+        \        'redis_cache': os.environ.get('REDIS_CACHE'),
+
+        \        'redis_queue': os.environ.get('REDIS_QUEUE'),
+
+        \        'redis_socketio': os.environ.get('REDIS_SOCKETIO'),
+
+        \        'socketio_port': 9000
+
+        \    })
+
+        \   \ 
+
+        \    with open(conf_path, 'w') as f:
+
+        \        json.dump(conf, f, indent=4)
+
+        \    print('✓ common_site_config.json actualizado.')
+
+        \   \ 
+
+        \    # 2. Actualizar credenciales en site_config.json de TODOS los sitios existentes
+
+        \    site_dirs = glob.glob('sites/*/')
+
+        \    site_dirs = [d for d in site_dirs if os.path.basename(d.rstrip('/')) not in ['assets', 'assets']]
+
+        \   \ 
+
+        \    print(f'Buscando sitios existentes... Encontrados: {len(site_dirs)}')
+
+        \   \ 
+
+        \    for site_dir in site_dirs:
+
+        \        site_config_path = os.path.join(site_dir, 'site_config.json')
+
+        \        if os.path.exists(site_config_path):
+
+        \            site_name = os.path.basename(site_dir.rstrip('/'))
+
+        \            print(f'Actualizando credenciales para: {site_name}')
+
+        \           \ 
+
+        \            with open(site_config_path, 'r') as f:
+
+        \                site_conf = json.load(f)
+
+        \           \ 
+
+        \            # Actualizar TODAS las credenciales de DB
+
+        \            site_conf['db_host'] = os.environ.get('DB_HOST')
+
+        \            site_conf['db_port'] = int(os.environ.get('DB_PORT') or 3306)
+
+        \           \ 
+
+        \            # Frappe utiliza SIEMPRE db_name como usuario de la BD de forma predeterminada.
+
+        \            # NO debemos sobreescribir db_password con la del root,\ 
+
+        \            # porque el usuario de cada sitio (ej. _a682473...) necesita su propia contraseña generada originalmente.
+
+        \            if 'db_user' in site_conf:
+
+        \                del site_conf['db_user']
+
+        \            # db_name y db_password se mantienen como fueron generados originalmente
+
+        \           \ 
+
+        \            with open(site_config_path, 'w') as f:
+
+        \                json.dump(site_conf, f, indent=4)
+
+        \           \ 
+
+        \            print(f'✓ Credenciales actualizadas para: {site_name}')
+
+        \            print(f'  - DB User: root')
+
+        \            print(f'  - DB Host: {os.environ.get(\"DB_HOST\")}')
+
+        \   \ 
+
+        \    print('SUCCESS: Configuración completada.')
+
+        except Exception as e:
+
+        \    print(f'ERROR: {str(e)}', file=sys.stderr)
+
+        \    import traceback
+
+        \    traceback.print_exc()
+
+        \    sys.exit(1)
+
+        EOF\n"
+    environment:
+      DB_HOST: '${DB_HOST}'
+      DB_PORT: '${DB_PORT:-3306}'
+      DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD}'
+      REDIS_CACHE: '${REDIS_CACHE}'
+      REDIS_QUEUE: '${REDIS_QUEUE}'
+      REDIS_SOCKETIO: '${REDIS_SOCKETIO}'
+    volumes:
+      - 'sites:/home/frappe/frappe-bench/sites'
+    networks:
+      - default
+      - coolify
+  create-site:
+    image: 'jbatistao/frappe-2-full:v15'
+    restart: 'no'
+    deploy:
+      restart_policy:
+        condition: on-failure
+    volumes:
+      - 'sites:/home/frappe/frappe-bench/sites'
+      - 'logs:/home/frappe/frappe-bench/logs'
+    entrypoint:
+      - bash
+      - '-c'
+    command:
+      - "SITE_NAME=$${FRAPPE_SITE_NAME_HEADER:-frontend}; echo \"Using site name: $$SITE_NAME\"; echo \"Esperando a que la base de datos esté disponible en ${DB_HOST}:${DB_PORT}...\" && for i in {1..60}; do
+
+        \  if timeout 2 bash -c \"</dev/tcp/${DB_HOST}/${DB_PORT}\" 2>/dev/null; then
+
+        \    echo \"✓ Base de datos disponible en puerto ${DB_PORT}\" &&
+
+        \    break;
+
+        \  fi;
+
+        \  echo \"Intento $$i/60 - Esperando...\" &&
+
+        \  sleep 2;
+
+        done; if [ -f \"sites/$$SITE_NAME/site_config.json\" ]; then
+
+        \   echo \"⚠️  El sitio '$$SITE_NAME' ya existe. Omitiendo creación para evitar pérdida de datos.\";
+
+        else
+
+        \   echo \"🚀 Creando sitio '$$SITE_NAME'...\";
+
+        \   bench new-site \"$$SITE_NAME\" --mariadb-user-host-login-scope='%' --admin-password=admin --db-root-username=root --db-root-password=${DB_ROOT_PASSWORD} --install-app frappe --install-app erpnext --install-app telephony --install-app hrms --install-app crm --install-app insights --install-app wiki --install-app frappe_assistant_core --install-app gameplan --install-app print_designer --force --verbose --set-default;
+
+        fi; echo \"🔄 Habilitando scheduler para el sitio '$$SITE_NAME'...\"; bench --site \"$$SITE_NAME\" enable-scheduler; echo \"🎯 Instalando Gameplan en el sitio '$$SITE_NAME' (si no está ya instalado)...\"; bench --site \"$$SITE_NAME\" install-app gameplan 2>&1 || echo \"ℹ️ Gameplan ya estaba instalado o no se pudo instalar (continuando)\"; echo \"🖨️ Instalando Print Designer en el sitio '$$SITE_NAME' (si no está ya instalado)...\"; bench --site \"$$SITE_NAME\" install-app print_designer 2>&1 || echo \"ℹ️ Print Designer ya estaba instalado o no se pudo instalar (continuando)\";\n"
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    environment:
+      FRAPPE_SITE_NAME_HEADER: '${FRAPPE_SITE_NAME_HEADER}'
+      DB_HOST: '${DB_HOST}'
+      DB_PORT: '${DB_PORT:-3306}'
+      DB_ROOT_PASSWORD: '${DB_ROOT_PASSWORD}'
+      REDIS_CACHE: '${REDIS_CACHE}'
+      REDIS_QUEUE: '${REDIS_QUEUE}'
+    networks:
+      - default
+      - coolify
+  backend:
+    image: 'jbatistao/frappe-2-full:v15'
+    restart: always
+    pull_policy: always
+    entrypoint:
+      - bash
+      - '-c'
+    command:
+      - "echo \"Esperando a que la base de datos esté disponible en ${DB_HOST}:${DB_PORT}...\" && for i in {1..60}; do
+
+        \  if timeout 2 bash -c \"</dev/tcp/${DB_HOST}/${DB_PORT}\" 2>/dev/null; then
+
+        \    echo \"✓ Base de datos disponible en puerto ${DB_PORT}\" &&
+
+        \    break;
+
+        \  fi;
+
+        \  echo \"Intento $i/60 - Esperando...\" &&
+
+        \  sleep 2;
+
+        done && echo \"Creando directorios necesarios...\" && mkdir -p /home/frappe/logs && cd /home/frappe/frappe-bench/sites && echo \"Iniciando backend con Gunicorn...\" && exec /home/frappe/frappe-bench/env/bin/gunicorn -b 0.0.0.0:8000 --worker-tmp-dir /dev/shm --threads=4 --workers=2 --timeout=120 --preload frappe.app:application\n"
+    volumes:
+      - 'sites:/home/frappe/frappe-bench/sites'
+    environment:
+      DB_HOST: '${DB_HOST}'
+      DB_PORT: '${DB_PORT:-3306}'
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+      create-site:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+  frontend:
+    image: 'jbatistao/frappe-2-full:v15'
+    restart: unless-stopped
+    pull_policy: always
+    command:
+      - nginx-entrypoint.sh
+    environment:
+      BACKEND: 'backend:8000'
+      SOCKETIO: 'websocket:9000'
+      FRAPPE_SITE_NAME_HEADER: '${FRAPPE_SITE_NAME_HEADER}'
+      UPSTREAM_REAL_IP_ADDRESS: '${UPSTREAM_REAL_IP_ADDRESS:-127.0.0.1}'
+      UPSTREAM_REAL_IP_HEADER: '${UPSTREAM_REAL_IP_HEADER:-X-Forwarded-For}'
+      UPSTREAM_REAL_IP_RECURSIVE: '${UPSTREAM_REAL_IP_RECURSIVE:-off}'
+      PROXY_READ_TIMEOUT: '${PROXY_READ_TIMEOUT:-120}'
+      CLIENT_MAX_BODY_SIZE: '${CLIENT_MAX_BODY_SIZE:-50m}'
+    volumes:
+      - 'sites:/home/frappe/frappe-bench/sites'
+    depends_on:
+      - backend
+      - websocket
+    ports:
+      - '8080'
+    labels:
+      - coolify.managed=true
+      - coolify.port=8080
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.erpnext.rule=Host(`ph.puntospanama.net`)
+      - traefik.http.routers.erpnext.entrypoints=websecure
+      - traefik.http.routers.erpnext.tls=true
+      - traefik.http.routers.erpnext.tls.certresolver=letsencrypt
+      - traefik.http.services.erpnext.loadbalancer.server.port=8080
+    networks:
+      - default
+      - coolify
+  websocket:
+    image: 'jbatistao/frappe-2-full:v15'
+    restart: unless-stopped
+    pull_policy: always
+    command:
+      - node
+      - /home/frappe/frappe-bench/apps/frappe/socketio.js
+    volumes:
+      - 'sites:/home/frappe/frappe-bench/sites'
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+  queue-short:
+    image: 'jbatistao/frappe-2-full:v15'
+    restart: unless-stopped
+    pull_policy: always
+    command: 'bench worker --queue short,default'
+    volumes:
+      - 'sites:/home/frappe/frappe-bench/sites'
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+  queue-long:
+    image: 'jbatistao/frappe-2-full:v15'
+    restart: unless-stopped
+    pull_policy: always
+    command: 'bench worker --queue long,default,short'
+    volumes:
+      - 'sites:/home/frappe/frappe-bench/sites'
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+  scheduler:
+    image: 'jbatistao/frappe-2-full:v15'
+    restart: unless-stopped
+    pull_policy: always
+    command: 'bench schedule'
+    volumes:
+      - 'sites:/home/frappe/frappe-bench/sites'
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+      create-site:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+volumes:
+  sites: null
+networks:
+  coolify:
+    external: true

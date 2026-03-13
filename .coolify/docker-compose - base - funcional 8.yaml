@@ -1,0 +1,553 @@
+version: '3.8'
+
+services:
+  configurator:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: "no"
+    pull_policy: always
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - |
+        python3 - << 'EOF'
+        import json, os, sys, glob
+        try:
+            # 1. Actualizar common_site_config.json
+            conf_path = 'sites/common_site_config.json'
+            os.makedirs('sites', exist_ok=True)
+            if os.path.exists(conf_path):
+                with open(conf_path, 'r') as f:
+                    conf = json.load(f)
+            else:
+                conf = {}
+            
+            conf.update({
+                'db_host': os.environ.get('DB_HOST'),
+                'db_port': int(os.environ.get('DB_PORT') or 3306),
+                'redis_cache': os.environ.get('REDIS_CACHE'),
+                'redis_queue': os.environ.get('REDIS_QUEUE'),
+                'redis_socketio': os.environ.get('REDIS_SOCKETIO'),
+                'socketio_port': 9000
+            })
+            
+            with open(conf_path, 'w') as f:
+                json.dump(conf, f, indent=4)
+            print('✓ common_site_config.json actualizado.')
+            
+            # 2. Actualizar credenciales en site_config.json de TODOS los sitios existentes
+            site_dirs = glob.glob('sites/*/')
+            site_dirs = [d for d in site_dirs if os.path.basename(d.rstrip('/')) not in ['assets', 'assets']]
+            
+            print(f'Buscando sitios existentes... Encontrados: {len(site_dirs)}')
+            
+            for site_dir in site_dirs:
+                site_config_path = os.path.join(site_dir, 'site_config.json')
+                if os.path.exists(site_config_path):
+                    site_name = os.path.basename(site_dir.rstrip('/'))
+                    print(f'Actualizando credenciales para: {site_name}')
+                    
+                    with open(site_config_path, 'r') as f:
+                        site_conf = json.load(f)
+                    
+                    # Actualizar TODAS las credenciales de DB
+                    site_conf['db_host'] = os.environ.get('DB_HOST')
+                    site_conf['db_port'] = int(os.environ.get('DB_PORT') or 3306)
+                    
+                    # Frappe utiliza SIEMPRE db_name como usuario de la BD de forma predeterminada.
+                    # NO debemos sobreescribir db_password con la del root, 
+                    # porque el usuario de cada sitio (ej. _a682473...) necesita su propia contraseña generada originalmente.
+                    if 'db_user' in site_conf:
+                        del site_conf['db_user']
+                    # db_name y db_password se mantienen como fueron generados originalmente
+                    
+                    with open(site_config_path, 'w') as f:
+                        json.dump(site_conf, f, indent=4)
+                    
+                    print(f'✓ Credenciales actualizadas para: {site_name}')
+                    print(f'  - DB User: root')
+                    print(f'  - DB Host: {os.environ.get("DB_HOST")}')
+            
+            print('SUCCESS: Configuración completada.')
+        except Exception as e:
+            print(f'ERROR: {str(e)}', file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+        EOF
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      REDIS_CACHE: ${REDIS_CACHE}
+      REDIS_QUEUE: ${REDIS_QUEUE}
+      REDIS_SOCKETIO: ${REDIS_SOCKETIO}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    networks:
+      - default
+      - coolify
+
+  create-site:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: "no"
+    deploy:
+      restart_policy:
+        condition: on-failure
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - |
+        set -e
+        SITE_NAME=$${FRAPPE_SITE_NAME_HEADER:-frontend}
+        echo "Using site name: $$SITE_NAME"
+
+        echo "Esperando a que la base de datos esté disponible en ${DB_HOST}:${DB_PORT}..."
+        for i in {1..60}; do
+          if timeout 2 bash -c "</dev/tcp/${DB_HOST}/${DB_PORT}" 2>/dev/null; then
+            echo "✓ Base de datos disponible en puerto ${DB_PORT}"
+            break
+          fi
+          echo "Intento $$i/60 - Esperando..."
+          sleep 2
+        done
+
+        echo "🔄 Sincronizando apps.txt del bench con el volumen sites/..."
+        BENCH_APPS_TXT="/home/frappe/frappe-bench/apps/frappe/../../../sites/apps.txt"
+        BENCH_ROOT="/home/frappe/frappe-bench"
+        SITES_APPS_TXT="$$BENCH_ROOT/sites/apps.txt"
+        # El apps.txt real del bench está en la imagen pero puede ser sobreescrito por el volumen.
+        # Regeneramos apps.txt a partir de los directorios reales de apps en la imagen.
+        echo "  Apps disponibles en la imagen:"
+        ls $$BENCH_ROOT/apps/
+        # Escribir apps.txt con todas las apps presentes en el bench de la imagen
+        python3 -c "
+        import os, json
+        apps_dir = '$$BENCH_ROOT/apps'
+        apps = sorted([
+            d for d in os.listdir(apps_dir)
+            if os.path.isdir(os.path.join(apps_dir, d)) and not d.startswith('.')
+        ])
+        print('Apps encontradas en bench:', apps)
+        with open('$$SITES_APPS_TXT', 'w') as f:
+            f.write('\n'.join(apps) + '\n')
+        print('✓ apps.txt actualizado con:', apps)
+        "
+
+        if [ -f "sites/$$SITE_NAME/site_config.json" ]; then
+          echo "⚠️  El sitio '$$SITE_NAME' ya existe. Omitiendo creación para evitar pérdida de datos."
+        else
+          echo "🚀 Creando sitio '$$SITE_NAME'..."
+          bench new-site "$$SITE_NAME" --mariadb-user-host-login-scope='%' --admin-password=admin --db-root-username=root --db-root-password=${DB_ROOT_PASSWORD} --install-app frappe --install-app erpnext --install-app telephony --install-app hrms --install-app crm --install-app insights --install-app wiki --install-app frappe_assistant_core --install-app gameplan --install-app print_designer --install-app builder --force --verbose --set-default
+        fi
+
+        echo "🔄 Habilitando scheduler para el sitio '$$SITE_NAME'..."
+        bench --site "$$SITE_NAME" enable-scheduler
+
+        echo "🎯 Instalando Gameplan en el sitio '$$SITE_NAME' (si no está ya instalado)..."
+        bench --site "$$SITE_NAME" install-app gameplan 2>&1 || echo "ℹ️ Gameplan ya estaba instalado o no se pudo instalar (continuando)"
+
+        echo "🖨️ Instalando Print Designer en el sitio '$$SITE_NAME' (si no está ya instalado)..."
+        bench --site "$$SITE_NAME" install-app print_designer 2>&1 || echo "ℹ️ Print Designer ya estaba instalado o no se pudo instalar (continuando)"
+
+        echo "🏗️ Instalando Builder en el sitio '$$SITE_NAME' (si no está ya instalado)..."
+        bench --site "$$SITE_NAME" install-app builder 2>&1 || echo "ℹ️ Builder ya estaba instalado o no se pudo instalar (continuando)"
+
+        echo "✓ Sitio preparado. Las migraciones se ejecutarán en el servicio migrate."
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    environment:
+      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      REDIS_CACHE: ${REDIS_CACHE}
+      REDIS_QUEUE: ${REDIS_QUEUE}
+    networks:
+      - default
+      - coolify
+
+  migrate:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: "no"
+    deploy:
+      restart_policy:
+        condition: on-failure
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - |
+        SITE_NAME=$${FRAPPE_SITE_NAME_HEADER:-frontend}
+        echo "🗄️ Ejecutando migraciones para el sitio '$$SITE_NAME'..."
+        bench --site "$$SITE_NAME" migrate
+        echo "✓ Migraciones completadas para '$$SITE_NAME'."
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      create-site:
+        condition: service_completed_successfully
+    environment:
+      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+    networks:
+      - default
+      - coolify
+
+  backend:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: always
+    pull_policy: always
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - |
+        python3 << 'PYEOF'
+        f = '/home/frappe/frappe-bench/apps/frappe/frappe/desk/reportview.py'
+        c = open(f).read()
+        if 'issingle' in c:
+            print('[fix-37623] Ya aplicado')
+        else:
+            candidates = [
+                ('    args = get_form_params()\n    partial_query', '    args = get_form_params()\n    if frappe.get_meta(args.doctype).issingle:\n        return 1\n    partial_query'),
+                ('\targs = get_form_params()\n\tpartial_query', '\targs = get_form_params()\n\tif frappe.get_meta(args.doctype).issingle:\n\t\treturn 1\n\tpartial_query'),
+            ]
+            for old, new in candidates:
+                if old in c:
+                    open(f, 'w').write(c.replace(old, new))
+                    print('[fix-37623] Fix aplicado exitosamente')
+                    break
+        PYEOF
+        echo "Esperando a que la base de datos este disponible en ${DB_HOST}:${DB_PORT}..."
+        for i in {1..60}; do
+          if timeout 2 bash -c "</dev/tcp/${DB_HOST}/${DB_PORT}" 2>/dev/null; then
+            echo "Base de datos disponible en puerto ${DB_PORT}"
+            break
+          fi
+          echo "Intento $i/60 - Esperando..."
+          sleep 2
+        done
+        mkdir -p /home/frappe/logs
+        cd /home/frappe/frappe-bench/sites
+        echo "Iniciando backend con Gunicorn..."
+        exec /home/frappe/frappe-bench/env/bin/gunicorn -b 0.0.0.0:8000 --worker-tmp-dir /dev/shm --threads=4 --workers=2 --timeout=120 --preload frappe.app:application
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+
+  frontend:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: unless-stopped
+    pull_policy: always
+    command:
+      - nginx-entrypoint.sh
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER}
+      UPSTREAM_REAL_IP_ADDRESS: ${UPSTREAM_REAL_IP_ADDRESS:-127.0.0.1}
+      UPSTREAM_REAL_IP_HEADER: ${UPSTREAM_REAL_IP_HEADER:-X-Forwarded-For}
+      UPSTREAM_REAL_IP_RECURSIVE: ${UPSTREAM_REAL_IP_RECURSIVE:-off}
+      PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-120}
+      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-50m}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      - backend
+      - websocket
+    labels:
+      - "traefik.docker.network=coolify"
+      - "traefik.http.services.frontend-rccgo84co8ogwck40s8s88wk.loadbalancer.server.port=8080"
+    networks:
+      - default
+      - coolify
+
+  websocket:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: unless-stopped
+    pull_policy: always
+    command:
+      - node
+      - /home/frappe/frappe-bench/apps/frappe/socketio.js
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+
+  queue-short:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: unless-stopped
+    pull_policy: always
+    command: bench worker --queue short,default
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+
+  queue-long:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: unless-stopped
+    pull_policy: always
+    command: bench worker --queue long,default,short
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+
+  scheduler:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: unless-stopped
+    pull_policy: always
+    command: bench schedule
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+
+  backup-s3:
+    image: jbatistao/erpnext-3d-full:v15
+    restart: unless-stopped
+    pull_policy: always
+    user: root
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - |
+        set -e
+
+        # --- 1. Instalar cron y AWS CLI ---
+        echo "Instalando cron y AWS CLI..."
+        apt-get update -qq && apt-get install -y -qq cron
+        pip install --quiet awscli
+        echo "✓ Dependencias instaladas"
+
+        # --- 2. Guardar variables de entorno para cron ---
+        printenv > /root/backup.env
+        chmod 600 /root/backup.env
+
+        # --- 3. Escribir el script de backup usando printf (inmune a CRLF del YAML) ---
+        rm -f /usr/local/bin/backup-s3.sh
+        printf '#!/bin/bash\nset -uo pipefail\n\n' > /usr/local/bin/backup-s3.sh
+        printf 'BENCH_DIR="/home/frappe/frappe-bench"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'SITES_DIR="$$BENCH_DIR/sites"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'S3_BUCKET="$${S3_BUCKET:-}"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'AWS_ACCESS_KEY_ID="$${AWS_ACCESS_KEY_ID:-}"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'AWS_SECRET_ACCESS_KEY="$${AWS_SECRET_ACCESS_KEY:-}"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'AWS_DEFAULT_REGION="$${AWS_DEFAULT_REGION:-us-east-1}"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'RETENTION_DAYS="$${RETENTION_DAYS:-30}"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'TIMESTAMP=$$(date +"%%Y%%m%%d_%%H%%M%%S")\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "========================================================"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Iniciando backup de ERPNext ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Destino S3: $${S3_BUCKET:-(no configurado)} ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "========================================================"\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf '# === Detectar SITE_NAME ANTES de correr bench ===\n' >> /usr/local/bin/backup-s3.sh
+        printf 'SITE_NAME=$$(printf "%%s" "$${FRAPPE_SITE_NAME_HEADER:-}" | tr -d "\r\n")\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== [detect-1] Env var FRAPPE_SITE_NAME_HEADER: '"'"'$$SITE_NAME'"'"' ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'if [ -z "$$SITE_NAME" ]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '    SITE_NAME=$$(cat "$$SITES_DIR/currentsite.txt" 2>/dev/null | tr -d "\r\n") || true\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "=== [detect-2] currentsite.txt: '"'"'$$SITE_NAME'"'"' ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'fi\n' >> /usr/local/bin/backup-s3.sh
+        printf 'if [ -z "$$SITE_NAME" ]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "=== [detect-3] Buscando con find en: $$SITES_DIR/ ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "=== [detect-3] Contenido del directorio sites: ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '    ls -1 "$$SITES_DIR/" 2>/dev/null || echo "(no accesible)"\n' >> /usr/local/bin/backup-s3.sh
+        printf '    SITE_NAME=$$(find "$$SITES_DIR/" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -v "/assets$$" | head -1 | xargs -I{} basename {}) || true\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "=== [detect-3] find sites/: '"'"'$$SITE_NAME'"'"' ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'fi\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Sitio a respaldar: '"'"'$$SITE_NAME'"'"' ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf 'MARKER=$$(mktemp /tmp/backup_marker.XXXXXX)\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Paso 1/4: Generando backup con bench ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'if [ -n "$$SITE_NAME" ]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '    BENCH_CMD="cd $$BENCH_DIR && bench --site $$SITE_NAME backup --with-files --compress"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'else\n' >> /usr/local/bin/backup-s3.sh
+        printf '    BENCH_CMD="cd $$BENCH_DIR && bench backup --with-files --compress"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'fi\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Ejecutando: $$BENCH_CMD ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'BENCH_OUTPUT=$$(su frappe -s /bin/bash -c "$$BENCH_CMD" 2>&1) || {\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "=== ERROR bench backup: ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "$$BENCH_OUTPUT"\n' >> /usr/local/bin/backup-s3.sh
+        printf '    rm -f "$$MARKER"; exit 1\n' >> /usr/local/bin/backup-s3.sh
+        printf '}\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "$$BENCH_OUTPUT"\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf '# Si SITE_NAME aun vacio, extraerlo de la salida de bench\n' >> /usr/local/bin/backup-s3.sh
+        printf 'if [ -z "$$SITE_NAME" ]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '    SITE_NAME=$$(echo "$$BENCH_OUTPUT" | grep "Backup Summary for" | awk '"'"'{print $$4}'"'"' | tr -d "\r\n ") || true\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "=== [detect-4] Desde bench output: '"'"'$$SITE_NAME'"'"' ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'fi\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Backup OK. Sitio confirmado: $$SITE_NAME ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Paso 2/4: Copiando site_config.json ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'if [ -n "$$SITE_NAME" ]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '    BACKUP_DIR="$$SITES_DIR/$$SITE_NAME/private/backups"\n' >> /usr/local/bin/backup-s3.sh
+        printf '    SITE_CONFIG="$$SITES_DIR/$$SITE_NAME/site_config.json"\n' >> /usr/local/bin/backup-s3.sh
+        printf '    if [ -f "$$SITE_CONFIG" ]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '        mkdir -p "$$BACKUP_DIR"\n' >> /usr/local/bin/backup-s3.sh
+        printf '        cp "$$SITE_CONFIG" "$$BACKUP_DIR/$${TIMESTAMP}-site_config.json" && echo "=== site_config.json copiado ===" || true\n' >> /usr/local/bin/backup-s3.sh
+        printf '    fi\n' >> /usr/local/bin/backup-s3.sh
+        printf 'fi\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Paso 3/4: Subiendo a S3 ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'if [ -z "$$S3_BUCKET" ] || [ -z "$$AWS_ACCESS_KEY_ID" ]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "=== S3 no configurado. Backup solo local. ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '    rm -f "$$MARKER"; exit 0\n' >> /usr/local/bin/backup-s3.sh
+        printf 'fi\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf 'export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION\n' >> /usr/local/bin/backup-s3.sh
+        printf 'FILES_UPLOADED=0\n' >> /usr/local/bin/backup-s3.sh
+        printf 'while IFS= read -r -d "" f; do\n' >> /usr/local/bin/backup-s3.sh
+        printf '    fname=$$(basename "$$f")\n' >> /usr/local/bin/backup-s3.sh
+        printf '    S3_KEY="$${SITE_NAME:-unknown}/$$TIMESTAMP/$$fname"\n' >> /usr/local/bin/backup-s3.sh
+        printf '    echo "=== Subiendo: $$fname ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '    if aws s3 cp "$$f" "$$S3_BUCKET/$$S3_KEY" --storage-class STANDARD_IA --only-show-errors; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '        FILES_UPLOADED=$$((FILES_UPLOADED + 1))\n' >> /usr/local/bin/backup-s3.sh
+        printf '    else\n' >> /usr/local/bin/backup-s3.sh
+        printf '        echo "=== ERROR al subir: $$fname ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '    fi\n' >> /usr/local/bin/backup-s3.sh
+        printf 'done < <(find "$$SITES_DIR" -path "*/private/backups/*" -type f -newer "$$MARKER" -print0 2>/dev/null)\n' >> /usr/local/bin/backup-s3.sh
+        printf 'rm -f "$$MARKER"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== $$FILES_UPLOADED archivos subidos a S3 ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== Paso 4/4: Limpiando backups de mas de $$RETENTION_DAYS dias en S3 ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'if [ -n "$${SITE_NAME:-}" ] && [ -n "$$S3_BUCKET" ]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '    CUTOFF=$$(date -d "$$RETENTION_DAYS days ago" +"%%Y-%%m-%%d" 2>/dev/null || echo "1970-01-01")\n' >> /usr/local/bin/backup-s3.sh
+        printf '    BUCKET_NAME=$$(echo "$$S3_BUCKET" | sed "s|s3://||" | cut -d"/" -f1)\n' >> /usr/local/bin/backup-s3.sh
+        printf '    aws s3 ls "$$S3_BUCKET/$$SITE_NAME/" --recursive 2>/dev/null | while read -r line; do\n' >> /usr/local/bin/backup-s3.sh
+        printf '        FDATE=$$(echo "$$line" | awk '"'"'{print $$1}'"'"')\n' >> /usr/local/bin/backup-s3.sh
+        printf '        FPATH=$$(echo "$$line" | awk '"'"'{print $$4}'"'"')\n' >> /usr/local/bin/backup-s3.sh
+        printf '        if [[ -n "$$FPATH" ]] && [[ "$$FDATE" < "$$CUTOFF" ]]; then\n' >> /usr/local/bin/backup-s3.sh
+        printf '            aws s3 rm "s3://$$BUCKET_NAME/$$FPATH" --only-show-errors 2>/dev/null || true\n' >> /usr/local/bin/backup-s3.sh
+        printf '        fi\n' >> /usr/local/bin/backup-s3.sh
+        printf '    done\n' >> /usr/local/bin/backup-s3.sh
+        printf 'fi\n' >> /usr/local/bin/backup-s3.sh
+        printf '\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "========================================================"\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "=== BACKUP COMPLETADO: $$FILES_UPLOADED archivos en S3 ==="\n' >> /usr/local/bin/backup-s3.sh
+        printf 'echo "========================================================"\n' >> /usr/local/bin/backup-s3.sh
+        chmod +x /usr/local/bin/backup-s3.sh
+
+        # --- DIAGNOSTICO: verificar script y sites antes de backup ---
+        echo "=== DIAGNOSTICO: backup-s3.sh generado ==="
+        echo "=== Lineas en script: $(wc -l < /usr/local/bin/backup-s3.sh) ==="
+        echo "=== Primeras 10 lineas: ==="
+        head -10 /usr/local/bin/backup-s3.sh
+        echo "=== BENCH_CMD lines: ==="
+        grep -n BENCH_CMD /usr/local/bin/backup-s3.sh || echo "sin BENCH_CMD"
+        echo "=== Sites dir: ==="
+        ls -la /home/frappe/frappe-bench/sites/ 2>&1 || echo SITES_DIR_NO_ACCESIBLE
+        echo "=== FIN DIAGNOSTICO ==="
+
+        # --- 4. Crear wrapper para cron (con env + tee para ver en Coolify) ---
+        printf '#!/bin/bash\n' > /usr/local/bin/run-backup.sh
+        printf 'set -a\n' >> /usr/local/bin/run-backup.sh
+        printf 'source /root/backup.env\n' >> /usr/local/bin/run-backup.sh
+        printf 'set +a\n' >> /usr/local/bin/run-backup.sh
+        printf '/usr/local/bin/backup-s3.sh 2>&1 | tee -a /var/log/erpnext-backup.log\n' >> /usr/local/bin/run-backup.sh
+
+        # --- 5. Configurar cron ---
+        CRON_HOUR=$${BACKUP_CRON_HOUR:-3}
+        CRON_MINUTE=$${BACKUP_CRON_MINUTE:-0}
+        echo "Backup programado: $${CRON_MINUTE} $${CRON_HOUR} * * * (UTC)"
+        echo "$${CRON_MINUTE} $${CRON_HOUR} * * * root /usr/local/bin/run-backup.sh" > /etc/cron.d/erpnext-backup
+        chmod 0644 /etc/cron.d/erpnext-backup
+
+        # --- 6. Test de conectividad S3 antes del backup ---
+        echo "=== TEST S3: Verificando credenciales y acceso al bucket ==="
+        export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+        S3_TEST_KEY="test-connection-$$(date +%s).txt"
+        S3_BUCKET_VAL="${S3_BUCKET:-}"
+        if [ -n "$$S3_BUCKET_VAL" ] && [ -n "$$AWS_ACCESS_KEY_ID" ]; then
+          echo "  Bucket: $$S3_BUCKET_VAL"
+          echo "  Region: $$AWS_DEFAULT_REGION"
+          echo "  Key ID: $${AWS_ACCESS_KEY_ID:0:8}..."
+          echo "test-$$(date)" > /tmp/s3-test.txt
+          if aws s3 cp /tmp/s3-test.txt "$$S3_BUCKET_VAL/$$S3_TEST_KEY" --only-show-errors 2>&1; then
+            echo "✓ TEST S3 UPLOAD: OK - archivo subido correctamente"
+            aws s3 ls "$$S3_BUCKET_VAL/" --human-readable 2>&1 | head -5 || true
+            aws s3 rm "$$S3_BUCKET_VAL/$$S3_TEST_KEY" --only-show-errors 2>&1 || true
+            echo "✓ TEST S3 DELETE: OK - archivo de prueba eliminado"
+          else
+            echo "✗ TEST S3: FALLO al subir archivo de prueba - verificar credenciales y bucket"
+          fi
+          rm -f /tmp/s3-test.txt
+        else
+          echo "⚠️ TEST S3: Saltado - S3_BUCKET o AWS_ACCESS_KEY_ID no estan configurados"
+        fi
+        echo "=== FIN TEST S3 ==="
+
+        # --- 7. Backup inmediato de verificacion ---
+        echo "Ejecutando backup inicial..."
+        /usr/local/bin/backup-s3.sh && echo "✓ Backup inicial exitoso" || echo "⚠️ Backup inicial fallo - ver error arriba"
+
+        # --- 8. Arrancar cron en primer plano ---
+        echo "Iniciando cron daemon..."
+        cron -f
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    environment:
+      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER}
+      S3_BUCKET: ${S3_BUCKET}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+      BACKUP_CRON_HOUR: ${BACKUP_CRON_HOUR:-3}
+      BACKUP_CRON_MINUTE: ${BACKUP_CRON_MINUTE:-0}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - coolify
+
+volumes:
+  sites:
+    name: erpnext_sites # Nombre fijo: sobrevive redeployments y eliminaciones de Coolify
+  logs:
+    name: erpnext_logs # Nombre fijo: sobrevive redeployments y eliminaciones de Coolify
+
+networks:
+  coolify:
+    external: true

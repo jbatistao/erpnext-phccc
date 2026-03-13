@@ -5,10 +5,6 @@ FROM python:${PYTHON_VERSION}-slim-${DEBIAN_BASE} AS base
 COPY resources/core/nginx/nginx-template.conf /templates/nginx/frappe.conf.template
 COPY resources/core/nginx/nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 
-# Fix CRLF en scripts (esencial en builds desde Windows)
-RUN find /usr/local/bin -type f -name "*.sh" -exec sed -i 's/\r$//' {} \; && \
-  chmod +x /usr/local/bin/nginx-entrypoint.sh
-
 ARG WKHTMLTOPDF_VERSION=0.12.6.1-3
 ARG WKHTMLTOPDF_DISTRO=bookworm
 ARG NODE_VERSION=24.13.0
@@ -31,7 +27,6 @@ RUN useradd -ms /bin/bash frappe \
   libpangocairo-1.0-0 \
   # For backups
   restic \
-  awscli \
   gpg \
   # MariaDB
   mariadb-client \
@@ -140,14 +135,21 @@ RUN export APP_INSTALL_ARGS="" && \
 
 FROM base AS backend
 
-# Copiar los scripts de backup y restauración desde S3
-COPY --chown=root:root restore_s3.py /usr/local/bin/restore_s3.py
-COPY --chown=root:root backup_s3.py /usr/local/bin/backup_s3.py
-RUN chmod +x /usr/local/bin/restore_s3.py /usr/local/bin/backup_s3.py
-
 USER frappe
 
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+
+# Fix frappe#37623 - TableMissingError for Single DocType shortcuts in Workspaces
+# See: https://github.com/frappe/frappe/issues/37623
+# Remove this block once Frappe releases an official fix
+RUN python3 -c "\
+  f='/home/frappe/frappe-bench/apps/frappe/frappe/desk/reportview.py';\
+  c=open(f).read();\
+  c=c.replace('    args = get_form_params()\\n    partial_query','    args = get_form_params()\\n    if frappe.get_meta(args.doctype).issingle:\\n        return 1\\n    partial_query');\
+  c=c.replace('\\targs = get_form_params()\\n\\tpartial_query','\\targs = get_form_params()\\n\\tif frappe.get_meta(args.doctype).issingle:\\n\\t\\treturn 1\\n\\tpartial_query');\
+  open(f,'w').write(c);\
+  print('[fix-37623] reportview.py patched OK')\
+  "
 
 WORKDIR /home/frappe/frappe-bench
 

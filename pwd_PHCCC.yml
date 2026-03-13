@@ -1,8 +1,6 @@
 services:
   backend:
-    image: jbatistao/erpnext-full-bk:v15
-    # image: jbatistao/erpnext-full-bk-mcp:v16
-    pull_policy: if_not_present
+    image: jbatistao/erpnext-3a-full:v15
     networks:
       - frappe_network
     deploy:
@@ -16,13 +14,9 @@ services:
       DB_PORT: "3306"
       MYSQL_ROOT_PASSWORD: admin
       MARIADB_ROOT_PASSWORD: admin
-      OPENAI_API_KEY: "your_openai_api_key_here"
-      ANTHROPIC_API_KEY: "your_anthropic_api_key_here"
 
   configurator:
-    image: jbatistao/erpnext-full-bk:v15
-    # image: jbatistao/erpnext-full-bk-mcp:v16
-    pull_policy: if_not_present
+    image: jbatistao/erpnext-3a-full:v15
     networks:
       - frappe_network
     deploy:
@@ -51,9 +45,7 @@ services:
       - logs:/home/frappe/frappe-bench/logs
 
   create-site:
-    image: jbatistao/erpnext-full-bk:v15
-    # image: jbatistao/erpnext-full-bk-mcp:v16
-    pull_policy: if_not_present
+    image: jbatistao/erpnext-3a-full:v15
     networks:
       - frappe_network
     deploy:
@@ -83,12 +75,8 @@ services:
           fi
         done;
         echo "sites/common_site_config.json found";
-        bench new-site --mariadb-user-host-login-scope='%' --admin-password=admin --db-root-username=root --db-root-password=admin --install-app frappe --install-app erpnext --install-app telephony --install-app hrms --install-app crm --install-app insights --install-app frappe_assistant_core --install-app wiki --install-app  gameplan --install-app print_designer --install-app builder --force --verbose --set-default frontend;
-        # --install-app telephony --install-app helpdesk --install-app hrms --install-app crm --install-app insights --install-app frappe_assistant_core --install-app wiki
-    depends_on:
-      - db
-      - redis-cache
-      - redis-queue
+        bench new-site --mariadb-user-host-login-scope='%' --admin-password=admin --db-root-username=root --db-root-password=admin --install-app erpnext --install-app telephony --install-app hrms --install-app crm --install-app insights --install-app frappe_assistant_core --install-app wiki --install-app gameplan --install-app print_designer --install-app builder --set-default frontend;
+
   db:
     image: mariadb:10.6
     networks:
@@ -112,9 +100,7 @@ services:
       - db-data:/var/lib/mysql
 
   frontend:
-    image: jbatistao/erpnext-full-bk:v15
-    # image: jbatistao/erpnext-full-bk-mcp:v16
-    pull_policy: if_not_present
+    image: jbatistao/erpnext-3a-full:v15
     networks:
       - frappe_network
     depends_on:
@@ -140,8 +126,7 @@ services:
       - "8080:8080"
 
   queue-long:
-    image: jbatistao/erpnext-full-bk:v15
-    # image: jbatistao/erpnext-full-bk-mcp:v16
+    image: jbatistao/erpnext-3a-full:v15
     networks:
       - frappe_network
     deploy:
@@ -160,8 +145,7 @@ services:
       FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
 
   queue-short:
-    image: jbatistao/erpnext-full-bk:v15
-    # image: jbatistao/erpnext-full-bk-mcp:v16
+    image: jbatistao/erpnext-3a-full:v15
     networks:
       - frappe_network
     deploy:
@@ -198,8 +182,7 @@ services:
         condition: on-failure
 
   scheduler:
-    image: jbatistao/erpnext-full-bk:v15
-    # image: jbatistao/erpnext-full-bk-mcp:v16
+    image: jbatistao/erpnext-3a-full:v15
     networks:
       - frappe_network
     deploy:
@@ -213,8 +196,7 @@ services:
       - logs:/home/frappe/frappe-bench/logs
 
   websocket:
-    image: jbatistao/erpnext-full-bk:v15
-    # image: jbatistao/erpnext-full-bk-mcp:v16
+    image: jbatistao/erpnext-3a-full:v15
     networks:
       - frappe_network
     deploy:
